@@ -66,6 +66,25 @@ function LogEntry({ entry }) {
     )
   }
 
+  if (entry.kind === 'error') {
+    return (
+      <div className="log-entry log-entry-error">
+        <div className="log-entry-header">
+          <span className="log-handle" style={{ color: '#ff6b6b' }}>
+            ✕ Error{entry.handle ? ` on @${entry.handle}` : ''}
+          </span>
+          <span className="log-time">{time}</span>
+        </div>
+        {entry.tweetText && (
+          <p className="log-tweet-text" style={{ opacity: 0.5 }}>"{entry.tweetText}"</p>
+        )}
+        <p className="log-tweet-text" style={{ color: '#ff6b6b', fontStyle: 'italic' }}>
+          {entry.reason}
+        </p>
+      </div>
+    )
+  }
+
   return (
     <div className="log-entry">
       <div className="log-entry-header">

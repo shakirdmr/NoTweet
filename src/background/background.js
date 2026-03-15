@@ -202,6 +202,8 @@ async function runOutboundCycle() {
   } catch (err) {
     state.error = err.message
     await setStorage({ [STORE.STATE]: state })
+    const { log: freshLog } = await loadAll()
+    await saveLogEntry({ tweet, replyText: null, kind: 'error', log: freshLog, reason: err.message })
   }
 
   await broadcastStatus()
@@ -270,6 +272,8 @@ async function runReplybackCycle() {
   } catch (err) {
     state.error = err.message
     await setStorage({ [STORE.STATE]: state })
+    const { log: freshLog } = await loadAll()
+    await saveLogEntry({ tweet, replyText: null, kind: 'error', log: freshLog, reason: err.message })
   }
 
   await broadcastStatus()
@@ -326,7 +330,8 @@ async function saveLogEntry({ tweet, replyText, kind, log, reason }) {
         tweetText: tweet.text,
         reply:     replyText,
         timestamp: Date.now(),
-        kind,      // 'outbound' | 'replyback'
+        kind,      // 'outbound' | 'replyback' | 'error'
+        reason,    // populated for 'error' entries
       }
     : {
         id:        `attempt_${Date.now()}`,
@@ -334,7 +339,7 @@ async function saveLogEntry({ tweet, replyText, kind, log, reason }) {
         tweetText: null,
         reply:     null,
         timestamp: Date.now(),
-        kind:      'attempt',
+        kind:      kind || 'attempt',
         reason,
       }
   const newLog = [entry, ...log].slice(0, 100)
