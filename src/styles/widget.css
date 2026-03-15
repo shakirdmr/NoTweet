@@ -1,0 +1,101 @@
+/*
+ * widget.css — Floating glassmorphism pill anchored to bottom-right.
+ *
+ * The .notweet-container wraps everything. When collapsed it shows the
+ * FloatingWidget pill; pointer-events are enabled only on the pill itself
+ * so the rest of the page remains fully interactive.
+ */
+
+/* ── Pill anchor — only wraps the collapsed pill ─────────────────────────── */
+.notweet-pill-anchor {
+  position:      fixed;
+  bottom:        20px;
+  right:         20px;
+  z-index:       2147483647;
+  pointer-events: none; /* pill itself opts in with pointer-events: all */
+}
+
+/* ── Floating pill ───────────────────────────────────────────────────────── */
+.floating-widget {
+  display:        flex;
+  align-items:    center;
+  gap:            10px;
+  padding:        10px 16px;
+  background:     var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border:         1px solid var(--glass-border);
+  border-radius:  var(--radius-pill);
+  box-shadow:     var(--glass-shadow);
+  cursor:         pointer;
+  pointer-events: all;
+  user-select:    none;
+  transition:     transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+  white-space:    nowrap;
+}
+
+.floating-widget:hover {
+  transform:    translateY(-3px);
+  box-shadow:   var(--glass-shadow-lg);
+  border-color: var(--glass-border-strong);
+}
+
+.floating-widget:active {
+  transform: translateY(-1px);
+}
+
+/* ── Logo image (used in widget, side panel, dashboard) ──────────────────── */
+.nt-logo {
+  flex-shrink:   0;
+  border-radius: var(--radius-sm);
+  object-fit:    cover;
+  display:       block;
+}
+
+/* ── Widget text block ───────────────────────────────────────────────────── */
+.widget-info {
+  display:        flex;
+  flex-direction: column;
+  gap:            2px;
+}
+
+.widget-count {
+  font-size:  11px;
+  color:      var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Status badge (used in both widget and dashboard) ────────────────────── */
+.status-badge {
+  display:     inline-flex;
+  align-items: center;
+  gap:         5px;
+  font-size:   12px;
+  font-weight: 600;
+}
+
+.status-dot {
+  width:         7px;
+  height:        7px;
+  border-radius: 50%;
+  flex-shrink:   0;
+}
+
+.status-badge.running .status-dot {
+  background: var(--success);
+  box-shadow: 0 0 6px var(--success);
+  animation:  pulse 1.6s infinite;
+}
+
+.status-badge.running .status-label { color: var(--success); }
+
+.status-badge.idle .status-dot      { background: var(--text-muted); }
+.status-badge.idle .status-label    { color: var(--text-secondary); }
+
+.status-badge.error .status-dot     { background: var(--error); }
+.status-badge.error .status-label   { color: var(--error); }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}

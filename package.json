@@ -1,0 +1,21 @@
+{
+  "name": "notweet",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "BUILD_TARGET=background vite build && BUILD_TARGET=content vite build && node scripts/postbuild.js",
+    "build:bg": "BUILD_TARGET=background vite build",
+    "build:content": "BUILD_TARGET=content vite build",
+    "dev": "node scripts/generateIcons.js && BUILD_TARGET=background vite build --watch & BUILD_TARGET=content vite build --watch",
+    "icons": "node scripts/generateIcons.js"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^5.4.11"
+  }
+}

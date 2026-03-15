@@ -1,0 +1,49 @@
+{
+  "manifest_version": 3,
+  "name": "NoTweet",
+  "version": "1.0.0",
+  "description": "AI-powered tweet reply assistant using Grok",
+  "permissions": [
+    "storage",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://twitter.com/*",
+    "https://x.com/*",
+    "https://api.anthropic.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://twitter.com/*",
+        "https://x.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    },
+    "default_title": "NoTweet"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["NoTweet.png"],
+      "matches": ["https://twitter.com/*", "https://x.com/*"]
+    }
+  ]
+}
