@@ -16,6 +16,9 @@ export const MSG = {
   // Background → Content: re-scan already-visible tweets (after SW restart wipes queue)
   RESCAN_TWEETS:     'RESCAN_TWEETS',
 
+  // Background → Content: synchronously return all currently visible tweets
+  GET_TWEETS:        'GET_TWEETS',
+
   // Background → Content (tab)
   TYPE_REPLY:        'TYPE_REPLY',
   STATUS_UPDATE:     'STATUS_UPDATE',

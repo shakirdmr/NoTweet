@@ -9,7 +9,7 @@
 import { MSG, STORE } from '../shared/constants.js'
 import { randomBetween, delay } from '../shared/utils.js'
 import { createShadowHost } from './shadowMount.js'
-import { startObserver, scanCurrentTweets } from './observer.js'
+import { startObserver, scanCurrentTweets, getTweets } from './observer.js'
 import { typeReply, findTweetNode } from './typer.js'
 import { mountUI }          from '../ui/main.jsx'
 
@@ -142,6 +142,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     // currently visible tweets without waiting for new DOM mutations.
     scanCurrentTweets(onTweetsFound)
     sendResponse({ ok: true })
+  }
+
+  if (type === MSG.GET_TWEETS) {
+    // Pull-based fetch: background asks for current visible tweets synchronously.
+    sendResponse({ tweets: getTweets() })
+    return false
   }
 })
 

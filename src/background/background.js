@@ -144,8 +144,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // OUTBOUND CYCLE — community / timeline replies
 // ═══════════════════════════════════════════════════════════════════════════════
 async function runOutboundCycle() {
-  // Reload persisted queue if SW was restarted and wiped the in-memory Map
+  // 1. Try in-memory map (populated by push from content script)
+  // 2. Fall back to storage (survives SW sleep)
+  // 3. Fall back to pulling directly from the page (guaranteed fresh)
   if (pendingTweets.size === 0) await loadPendingTweets()
+  if (pendingTweets.size === 0) await fetchTweetsFromTab()
 
   let { settings, state, log } = await loadAll()
 
@@ -178,10 +181,8 @@ async function runOutboundCycle() {
   const tweet = pickTweet(pendingTweets, settings, state.seenTweets)
   savePendingTweets()  // persist map after pickTweet may have deleted entries
   if (!tweet) {
-    // Queue empty — first try to recover already-visible tweets (lost on SW restart),
-    // then ask the content script to scroll and load more.
+    // Queue empty or no tweets matched filters — scroll to load fresh content
     if (pendingTweets.size === 0) {
-      await rescanTweets()
       await requestMoreTweets()
     }
     const { log } = await loadAll()
@@ -375,7 +376,7 @@ async function sendReplyToTab({ tweetId, replyText, handle, autoSubmit, tweet, l
   }
 }
 
-async function rescanTweets() {
+async function fetchTweetsFromTab() {
   let tabId = currentTabId
   if (tabId === null) {
     const tabs = await chrome.tabs.query({ url: ['https://twitter.com/*', 'https://x.com/*'] })
@@ -383,7 +384,15 @@ async function rescanTweets() {
     tabId = tabs[0].id
     currentTabId = tabId
   }
-  chrome.tabs.sendMessage(tabId, { type: MSG.RESCAN_TWEETS }).catch(() => {})
+  try {
+    const response = await chrome.tabs.sendMessage(tabId, { type: MSG.GET_TWEETS })
+    if (response?.tweets?.length) {
+      for (const tweet of response.tweets) {
+        if (!pendingTweets.has(tweet.id)) pendingTweets.set(tweet.id, tweet)
+      }
+      savePendingTweets()
+    }
+  } catch (_) {}
 }
 
 async function requestMoreTweets() {

@@ -48,6 +48,27 @@ export function startObserver(onTweetsFound) {
   return () => observer.disconnect()
 }
 
+/**
+ * Force-scans all tweets currently visible in the DOM and calls onTweetsFound.
+ * Use this after a service-worker restart wipes the in-memory queue, since
+ * already-rendered tweets won't re-trigger the MutationObserver.
+ */
+export function scanCurrentTweets(onTweetsFound) {
+  const nodes = document.querySelectorAll(TWEET_SELECTOR)
+  if (!nodes.length) return
+  const extracted = extractTweetData([...nodes])
+  if (extracted.length) onTweetsFound(extracted)
+}
+
+/**
+ * Synchronously returns all tweet data currently visible in the DOM.
+ * Used by the GET_TWEETS message handler for pull-based fetching.
+ */
+export function getTweets() {
+  const nodes = document.querySelectorAll(TWEET_SELECTOR)
+  return nodes.length ? extractTweetData([...nodes]) : []
+}
+
 // ─── Data extraction ──────────────────────────────────────────────────────────
 function extractTweetData(nodes) {
   const seen    = new Set()
