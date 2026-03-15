@@ -9,7 +9,7 @@
 import { MSG, STORE } from '../shared/constants.js'
 import { randomBetween, delay } from '../shared/utils.js'
 import { createShadowHost } from './shadowMount.js'
-import { startObserver }    from './observer.js'
+import { startObserver, scanCurrentTweets } from './observer.js'
 import { typeReply, findTweetNode } from './typer.js'
 import { mountUI }          from '../ui/main.jsx'
 
@@ -98,10 +98,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (type === MSG.TYPE_REPLY) {
     ;(async () => {
       const { tweetId, replyText, autoSubmit } = payload
-      const tweetNode = findTweetNode(tweetId)
+      let tweetNode = findTweetNode(tweetId)
+
+      // Twitter's virtual list removes off-screen tweets from the DOM.
+      // If the tweet scrolled away during the 30-120s reply delay, scroll
+      // back to the top so Twitter re-renders the feed, then retry once.
+      if (!tweetNode) {
+        window.scrollTo({ top: 0, behavior: 'smooth' })
+        await delay(1200)
+        tweetNode = findTweetNode(tweetId)
+      }
 
       if (!tweetNode) {
-        sendResponse({ ok: false, error: 'Tweet node not found in DOM' })
+        sendResponse({ ok: false, error: 'Tweet scrolled out of view — will retry next cycle' })
         return
       }
       try {
@@ -120,6 +129,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (type === MSG.LOAD_MORE_TWEETS) {
     humanScroll() // fire-and-forget — spreads over several seconds naturally
+    sendResponse({ ok: true })
+  }
+
+  if (type === MSG.RESCAN_TWEETS) {
+    // Service worker restarted and lost its in-memory queue — re-send all
+    // currently visible tweets without waiting for new DOM mutations.
+    scanCurrentTweets(onTweetsFound)
     sendResponse({ ok: true })
   }
 })

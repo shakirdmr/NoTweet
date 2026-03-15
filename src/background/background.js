@@ -198,7 +198,7 @@ async function runOutboundCycle() {
     state.outboundCount++
     await setStorage({ [STORE.STATE]: state })
     await saveLogEntry({ tweet, replyText, kind: 'outbound', log })
-    await sendReplyToTab({ tweetId: tweet.id, replyText, handle: tweet.handle, autoSubmit: settings.autoSubmit })
+    await sendReplyToTab({ tweetId: tweet.id, replyText, handle: tweet.handle, autoSubmit: settings.autoSubmit, tweet })
   } catch (err) {
     state.error = err.message
     await setStorage({ [STORE.STATE]: state })
@@ -268,7 +268,7 @@ async function runReplybackCycle() {
     state.replybackCount++
     await setStorage({ [STORE.STATE]: state })
     await saveLogEntry({ tweet, replyText, kind: 'replyback', log })
-    await sendReplyToTab({ tweetId: tweet.id, replyText, handle: tweet.handle, autoSubmit: settings.autoSubmit })
+    await sendReplyToTab({ tweetId: tweet.id, replyText, handle: tweet.handle, autoSubmit: settings.autoSubmit, tweet })
   } catch (err) {
     state.error = err.message
     await setStorage({ [STORE.STATE]: state })
@@ -347,7 +347,7 @@ async function saveLogEntry({ tweet, replyText, kind, log, reason }) {
   await broadcastToTabs({ type: MSG.LOG_UPDATE, payload: { entry } })
 }
 
-async function sendReplyToTab({ tweetId, replyText, handle, autoSubmit }) {
+async function sendReplyToTab({ tweetId, replyText, handle, autoSubmit, tweet, log }) {
   let tabId = currentTabId
   if (tabId === null) {
     // Service worker may have been restarted — find any active Twitter/X tab
@@ -356,10 +356,18 @@ async function sendReplyToTab({ tweetId, replyText, handle, autoSubmit }) {
     tabId = tabs[0].id
     currentTabId = tabId
   }
-  chrome.tabs.sendMessage(tabId, {
-    type:    MSG.TYPE_REPLY,
-    payload: { tweetId, replyText, handle, autoSubmit },
-  }).catch(() => {})
+  try {
+    const response = await chrome.tabs.sendMessage(tabId, {
+      type:    MSG.TYPE_REPLY,
+      payload: { tweetId, replyText, handle, autoSubmit },
+    })
+    if (response && !response.ok) {
+      const { log: freshLog } = await loadAll()
+      await saveLogEntry({ tweet, replyText: null, kind: 'error', log: freshLog, reason: response.error })
+    }
+  } catch (err) {
+    // Tab closed or content script not ready — ignore silently
+  }
 }
 
 async function rescanTweets() {
