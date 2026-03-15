@@ -13,17 +13,14 @@ export const MSG = {
   // Tweet correction (content ↔ background, direct sendMessage)
   CORRECT_TWEET:     'CORRECT_TWEET',
 
-  // Background → Content: re-scan already-visible tweets (after SW restart wipes queue)
-  RESCAN_TWEETS:     'RESCAN_TWEETS',
-
-  // Background → Content: synchronously return all currently visible tweets
-  GET_TWEETS:        'GET_TWEETS',
+  // Content → Background: outbound reply loop (content script manages timing)
+  GENERATE_REPLY:    'GENERATE_REPLY',  // ask Claude for a reply to a tweet
+  LOG_OUTBOUND:      'LOG_OUTBOUND',    // report a sent reply; background updates counts
+  LOG_ATTEMPT:       'LOG_ATTEMPT',     // report a skipped cycle (scroll / no match)
 
   // Background → Content (tab)
-  TYPE_REPLY:        'TYPE_REPLY',
   STATUS_UPDATE:     'STATUS_UPDATE',
   LOG_UPDATE:        'LOG_UPDATE',
-  LOAD_MORE_TWEETS:  'LOAD_MORE_TWEETS', // ask content script to scroll & load tweets
 }
 
 // ─── chrome.storage.local keys ───────────────────────────────────────────────
@@ -32,7 +29,6 @@ export const STORE = {
   STATE:          'state',
   LOG:            'log',
   REPLYBACK_QUEUE:  'replybackQueue',  // persisted so it survives service-worker sleep
-  PENDING_TWEETS:   'pendingTweets',   // persisted outbound queue (survives SW sleep)
 }
 
 // ─── Default values ───────────────────────────────────────────────────────────
@@ -87,5 +83,4 @@ export const DELAY = {
 }
 
 // ─── Chrome alarm names ───────────────────────────────────────────────────────
-export const ALARM_OUTBOUND  = 'notweet_outbound'   // community reply cycle
 export const ALARM_REPLYBACK = 'notweet_replyback'  // reply-back to own post

@@ -1,30 +1,24 @@
 /**
  * NoTweet — Background Service Worker (MV3)
  *
- * Two independent reply flows:
+ * Responsibilities (streamlined):
  *
- * 1. OUTBOUND  — replies to community / timeline tweets
- *    • Triggered by TWEETS_AVAILABLE from content script
- *    • Respects outboundLimit per night
- *    • Random 30–120 s delay between replies (chrome alarm)
- *
- * 2. REPLYBACK — instant reply when someone replies to the user's own post
+ * 1. REPLYBACK — replies to replies on the user's own posts
  *    • Triggered by REPLY_TO_MY_POST from content script
- *    • Respects replybackLimit per night
- *    • Short 5–15 s delay (feels natural, not robotic)
- *    • Queue persisted in chrome.storage.local (survives service-worker sleep)
+ *    • Uses chrome.alarm (5–15 s delay), queue persisted in storage
+ *
+ * 2. GENERATE_REPLY — Claude API calls on behalf of content script
+ *    • Content script owns the outbound reply loop (setTimeout, never sleeps)
+ *    • Background is a stateless API proxy here
+ *
+ * 3. State management — LOG_OUTBOUND / LOG_ATTEMPT / status broadcasts
  */
 
-import { MSG, STORE, ALARM_OUTBOUND, ALARM_REPLYBACK, DELAY } from '../shared/constants.js'
+import { MSG, STORE, ALARM_REPLYBACK, DELAY } from '../shared/constants.js'
 import {
   loadAll, setStorage, ensureDefaults,
   randomBetween, todayString,
 } from '../shared/utils.js'
-
-// ─── In-memory outbound tweet queue ──────────────────────────────────────────
-// Wiped on service-worker sleep — fine, content script repopulates continuously.
-let pendingTweets = new Map()
-let currentTabId  = null
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 chrome.runtime.onInstalled.addListener(ensureDefaults)
@@ -32,7 +26,6 @@ chrome.runtime.onStartup.addListener(ensureDefaults)
 
 // ─── Alarm handler ────────────────────────────────────────────────────────────
 chrome.alarms.onAlarm.addListener(async (alarm) => {
-  if (alarm.name === ALARM_OUTBOUND)  await runOutboundCycle()
   if (alarm.name === ALARM_REPLYBACK) await runReplybackCycle()
 })
 
@@ -41,22 +34,55 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const { type, payload } = message
 
   switch (type) {
-    // ── New community tweets spotted in DOM ────────────────────────────────
-    case MSG.TWEETS_AVAILABLE: {
-      if (sender.tab?.id) currentTabId = sender.tab.id
-      for (const [id, data] of Object.entries(payload.tweetMap)) {
-        if (!pendingTweets.has(id)) pendingTweets.set(id, data)
-      }
-      savePendingTweets()  // fire-and-forget — survives SW sleep
-      sendResponse({ ok: true })
-      return false
-    }
 
     // ── Someone replied to the user's own post ─────────────────────────────
     case MSG.REPLY_TO_MY_POST: {
-      if (sender.tab?.id) currentTabId = sender.tab.id
       ;(async () => {
         await enqueueReplyback(payload.tweet)
+        sendResponse({ ok: true })
+      })()
+      return true
+    }
+
+    // ── Content script asks Claude for a reply text ────────────────────────
+    case MSG.GENERATE_REPLY: {
+      ;(async () => {
+        const { settings } = await loadAll()
+        if (!settings.apiKey && !settings.proxyUrl) {
+          sendResponse({ ok: false, error: 'No API key configured.' })
+          return
+        }
+        try {
+          const replyText = await callClaude(payload.tweetText, settings, 'outbound')
+          sendResponse({ ok: true, replyText })
+        } catch (err) {
+          sendResponse({ ok: false, error: err.message })
+        }
+      })()
+      return true
+    }
+
+    // ── Content script reports a successful outbound reply ─────────────────
+    case MSG.LOG_OUTBOUND: {
+      ;(async () => {
+        let { state, log } = await loadAll()
+        state = checkDailyReset(state)
+        state.seenTweets[payload.tweet.id] = true
+        state.outboundCount++
+        state.error = null
+        await setStorage({ [STORE.STATE]: state })
+        await saveLogEntry({ tweet: payload.tweet, replyText: payload.replyText, kind: 'outbound', log })
+        await broadcastStatus()
+        sendResponse({ ok: true })
+      })()
+      return true
+    }
+
+    // ── Content script reports a skipped cycle ────────────────────────────
+    case MSG.LOG_ATTEMPT: {
+      ;(async () => {
+        const { log } = await loadAll()
+        await saveLogEntry({ tweet: null, replyText: null, kind: 'attempt', log, reason: payload.reason })
         sendResponse({ ok: true })
       })()
       return true
@@ -68,8 +94,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         state.isRunning = true
         state.error = null
         await setStorage({ [STORE.STATE]: state })
-        await scheduleOutbound()
-        await broadcastStatus()
+        await broadcastStatus()  // content script starts its reply loop on STATUS_UPDATE
         sendResponse({ ok: true })
       })()
       return true
@@ -77,7 +102,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case MSG.STOP_BOT: {
       ;(async () => {
-        await chrome.alarms.clear(ALARM_OUTBOUND)
         await chrome.alarms.clear(ALARM_REPLYBACK)
         const { state } = await loadAll()
         state.isRunning = false
@@ -141,95 +165,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// OUTBOUND CYCLE — community / timeline replies
-// ═══════════════════════════════════════════════════════════════════════════════
-async function runOutboundCycle() {
-  // 1. Try in-memory map (populated by push from content script)
-  // 2. Fall back to storage (survives SW sleep)
-  // 3. Fall back to pulling directly from the page (guaranteed fresh)
-  if (pendingTweets.size === 0) await loadPendingTweets()
-  if (pendingTweets.size === 0) await fetchTweetsFromTab()
-
-  let { settings, state, log } = await loadAll()
-
-  state = checkDailyReset(state)
-
-  if (!state.isRunning) return
-  if (!settings.autoReply) {
-    const { log } = await loadAll()
-    await saveLogEntry({
-      tweet: null, replyText: null, kind: 'attempt', log,
-      reason: 'Auto-reply is off — turn it on in the Status tab to enable replies',
-    })
-    await scheduleOutbound()
-    return
-  }
-  if (state.outboundCount >= settings.outboundLimit) {
-    state.error = `Outbound limit of ${settings.outboundLimit} reached for today.`
-    await setStorage({ [STORE.STATE]: state })
-    await broadcastStatus()
-    return
-  }
-  if (!settings.apiKey && !settings.proxyUrl) {
-    state.error = 'No Claude API key configured.'
-    await setStorage({ [STORE.STATE]: state })
-    await broadcastStatus()
-    await scheduleOutbound()
-    return
-  }
-
-  const tweet = pickTweet(pendingTweets, settings, state.seenTweets)
-  savePendingTweets()  // persist map after pickTweet may have deleted entries
-  if (!tweet) {
-    // Queue empty or no tweets matched filters — scroll to load fresh content
-    if (pendingTweets.size === 0) {
-      await requestMoreTweets()
-    }
-    const { log } = await loadAll()
-    await saveLogEntry({
-      tweet: null, replyText: null, kind: 'attempt', log,
-      reason: pendingTweets.size === 0
-        ? 'Scrolling to load more posts…'
-        : 'No tweets matched your filters — check keywords/accounts in Settings',
-    })
-    await scheduleOutbound()
-    return
-  }
-
-  state.error = null
-
-  try {
-    const replyText = await callClaude(tweet.text, settings, 'outbound')
-    state.seenTweets[tweet.id] = true
-    state.outboundCount++
-    await setStorage({ [STORE.STATE]: state })
-    await saveLogEntry({ tweet, replyText, kind: 'outbound', log })
-    await sendReplyToTab({ tweetId: tweet.id, replyText, handle: tweet.handle, autoSubmit: settings.autoSubmit, tweet })
-  } catch (err) {
-    state.error = err.message
-    await setStorage({ [STORE.STATE]: state })
-    const { log: freshLog } = await loadAll()
-    await saveLogEntry({ tweet, replyText: null, kind: 'error', log: freshLog, reason: err.message })
-  }
-
-  await broadcastStatus()
-  await scheduleOutbound()
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
 // REPLYBACK CYCLE — reply to replies on the user's own posts
 // ═══════════════════════════════════════════════════════════════════════════════
 async function enqueueReplyback(tweet) {
   const stored = await chrome.storage.local.get(STORE.REPLYBACK_QUEUE)
   const queue  = stored[STORE.REPLYBACK_QUEUE] || []
 
-  // Don't enqueue the same tweet twice
   if (queue.some((t) => t.id === tweet.id)) return
 
   queue.push(tweet)
   await setStorage({ [STORE.REPLYBACK_QUEUE]: queue })
 
-  // Schedule a replyback alarm if one isn't already pending
   const existing = await chrome.alarms.get(ALARM_REPLYBACK)
   if (!existing) {
     const delayMs = randomBetween(DELAY.REPLYBACK_MIN_MS, DELAY.REPLYBACK_MAX_MS)
@@ -254,13 +200,10 @@ async function runReplybackCycle() {
   }
   if (!settings.apiKey && !settings.proxyUrl) return
 
-  // Pop the first item
   const tweet = queue.shift()
   await setStorage({ [STORE.REPLYBACK_QUEUE]: queue })
 
-  // Check we haven't already replied
   if (state.seenTweets[tweet.id]) {
-    // Still items? Reschedule
     if (queue.length) {
       const delayMs = randomBetween(DELAY.REPLYBACK_MIN_MS, DELAY.REPLYBACK_MAX_MS)
       chrome.alarms.create(ALARM_REPLYBACK, { delayInMinutes: delayMs / 60_000 })
@@ -274,7 +217,7 @@ async function runReplybackCycle() {
     state.replybackCount++
     await setStorage({ [STORE.STATE]: state })
     await saveLogEntry({ tweet, replyText, kind: 'replyback', log })
-    await sendReplyToTab({ tweetId: tweet.id, replyText, handle: tweet.handle, autoSubmit: settings.autoSubmit, tweet })
+    await sendReplyToTab({ tweetId: tweet.id, replyText, autoSubmit: settings.autoSubmit, tweet })
   } catch (err) {
     state.error = err.message
     await setStorage({ [STORE.STATE]: state })
@@ -284,7 +227,6 @@ async function runReplybackCycle() {
 
   await broadcastStatus()
 
-  // If more items in queue, schedule next replyback
   if (queue.length) {
     const delayMs = randomBetween(DELAY.REPLYBACK_MIN_MS, DELAY.REPLYBACK_MAX_MS)
     chrome.alarms.create(ALARM_REPLYBACK, { delayInMinutes: delayMs / 60_000 })
@@ -302,30 +244,8 @@ function checkDailyReset(state) {
     state.replybackCount = 0
     state.seenTweets     = {}
     state.lastReset      = today
-    // Fire-and-forget persist; caller will setStorage with full state
   }
   return state
-}
-
-function pickTweet(queue, settings, seenTweets) {
-  for (const [id, tweet] of queue.entries()) {
-    if (seenTweets[id]) { queue.delete(id); continue }
-    if (matchesFilters(tweet, settings)) { queue.delete(id); return tweet }
-  }
-  return null
-}
-
-function matchesFilters(tweet, settings) {
-  const { keywords, accounts } = settings
-  if (!keywords.length && !accounts.length) return true
-
-  const textLower   = tweet.text.toLowerCase()
-  const handleLower = tweet.handle.toLowerCase()
-
-  return (
-    keywords.some((kw) => textLower.includes(kw.toLowerCase())) ||
-    accounts.some((acc) => handleLower === acc.toLowerCase().replace(/^@/, ''))
-  )
 }
 
 async function saveLogEntry({ tweet, replyText, kind, log, reason }) {
@@ -336,8 +256,8 @@ async function saveLogEntry({ tweet, replyText, kind, log, reason }) {
         tweetText: tweet.text,
         reply:     replyText,
         timestamp: Date.now(),
-        kind,      // 'outbound' | 'replyback' | 'error'
-        reason,    // populated for 'error' entries
+        kind,
+        reason,
       }
     : {
         id:        `attempt_${Date.now()}`,
@@ -353,101 +273,60 @@ async function saveLogEntry({ tweet, replyText, kind, log, reason }) {
   await broadcastToTabs({ type: MSG.LOG_UPDATE, payload: { entry } })
 }
 
-async function sendReplyToTab({ tweetId, replyText, handle, autoSubmit, tweet, log }) {
-  let tabId = currentTabId
-  if (tabId === null) {
-    // Service worker may have been restarted — find any active Twitter/X tab
-    const tabs = await chrome.tabs.query({ url: ['https://twitter.com/*', 'https://x.com/*'] })
-    if (!tabs.length) return
-    tabId = tabs[0].id
-    currentTabId = tabId
-  }
-  try {
-    const response = await chrome.tabs.sendMessage(tabId, {
-      type:    MSG.TYPE_REPLY,
-      payload: { tweetId, replyText, handle, autoSubmit },
-    })
-    if (response && !response.ok) {
-      const { log: freshLog } = await loadAll()
-      await saveLogEntry({ tweet, replyText: null, kind: 'error', log: freshLog, reason: response.error })
-    }
-  } catch (err) {
-    // Tab closed or content script not ready — ignore silently
-  }
-}
-
-async function fetchTweetsFromTab() {
-  let tabId = currentTabId
-  if (tabId === null) {
-    const tabs = await chrome.tabs.query({ url: ['https://twitter.com/*', 'https://x.com/*'] })
-    if (!tabs.length) return
-    tabId = tabs[0].id
-    currentTabId = tabId
-  }
-  try {
-    const response = await chrome.tabs.sendMessage(tabId, { type: MSG.GET_TWEETS })
-    if (response?.tweets?.length) {
-      for (const tweet of response.tweets) {
-        if (!pendingTweets.has(tweet.id)) pendingTweets.set(tweet.id, tweet)
+async function sendReplyToTab({ tweetId, replyText, autoSubmit, tweet }) {
+  const tabs = await chrome.tabs.query({ url: ['https://twitter.com/*', 'https://x.com/*'] })
+  if (!tabs.length) return
+  for (const tab of tabs) {
+    try {
+      const resp = await chrome.tabs.sendMessage(tab.id, {
+        type:    MSG.TYPE_REPLY,
+        payload: { tweetId, replyText, autoSubmit },
+      })
+      if (resp && !resp.ok) {
+        const { log: freshLog } = await loadAll()
+        await saveLogEntry({ tweet, replyText: null, kind: 'error', log: freshLog, reason: resp.error })
       }
-      savePendingTweets()
-    }
-  } catch (_) {}
-}
-
-async function requestMoreTweets() {
-  let tabId = currentTabId
-  if (tabId === null) {
-    const tabs = await chrome.tabs.query({ url: ['https://twitter.com/*', 'https://x.com/*'] })
-    if (!tabs.length) return
-    tabId = tabs[0].id
-    currentTabId = tabId
+    } catch (_) {}
   }
-  chrome.tabs.sendMessage(tabId, { type: MSG.LOAD_MORE_TWEETS }).catch(() => {})
-}
-
-function savePendingTweets() {
-  const obj = {}
-  for (const [id, data] of pendingTweets.entries()) obj[id] = data
-  chrome.storage.local.set({ [STORE.PENDING_TWEETS]: obj })
-}
-
-async function loadPendingTweets() {
-  const result = await chrome.storage.local.get(STORE.PENDING_TWEETS)
-  const stored = result[STORE.PENDING_TWEETS] || {}
-  for (const [id, data] of Object.entries(stored)) {
-    if (!pendingTweets.has(id)) pendingTweets.set(id, data)
-  }
-}
-
-async function scheduleOutbound() {
-  const delaySec = randomBetween(DELAY.MIN_BETWEEN_REPLIES, DELAY.MAX_BETWEEN_REPLIES)
-  await chrome.alarms.clear(ALARM_OUTBOUND)
-  chrome.alarms.create(ALARM_OUTBOUND, { delayInMinutes: delaySec / 60 })
 }
 
 // ─── Claude API ───────────────────────────────────────────────────────────────
 async function callClaude(tweetText, settings, kind = 'outbound', customPrompt = '') {
   const { apiKey, proxyUrl, proxySecret } = settings
 
-  let prompt
+  let system, userContent
+
   if (kind === 'replyback') {
-    prompt = `Someone replied to your tweet. Write a short, warm, conversational reply back to them.\n\nTheir reply:\n"${tweetText}"\n\nYour reply:`
+    system = `Someone replied to your tweet. Reply back naturally.
+Rules:
+- 1–2 short sentences only
+- Conversational, like a real person texting
+- No openers like "Great point!" or "Thanks for sharing"
+- No hashtags, no emojis unless the original used them
+- Output only the reply text — no labels, no quotes, no formatting`
+    userContent = `Their reply: "${tweetText}"`
   } else if (kind === 'correction') {
-    const instruction = customPrompt.trim() ||
-      'Fix grammar, improve clarity, and make this tweet more engaging. Keep the same tone and meaning. Return only the improved tweet text, nothing else.'
-    prompt = `${instruction}\n\nTweet:\n"${tweetText}"\n\nImproved tweet:`
+    system = customPrompt.trim() ||
+      'Fix grammar, improve clarity, and make this tweet more engaging. Keep the same tone and meaning. Return only the improved tweet text — no labels, no quotes, no explanation.'
+    userContent = tweetText
   } else {
-    prompt = `Write a short friendly reply to this tweet.\n\nTweet:\n"${tweetText}"\n\nReply:`
+    system = `You reply to tweets as a real person would.
+Rules:
+- 1–2 short sentences max — be brief
+- No openers like "Great post!", "Love this!", "So true!"
+- No hashtags unless you're adding genuine value
+- Sound genuine and specific to what the tweet actually says
+- Output only the reply text — no labels, no quotes, no markdown`
+    userContent = `Tweet: "${tweetText}"`
   }
 
-  const payload = {
+  const apiPayload = {
     model:      'claude-haiku-4-5-20251001',
-    max_tokens: 150,
-    messages:   [{ role: 'user', content: prompt }],
+    max_tokens: 80,
+    system,
+    messages:   [{ role: 'user', content: userContent }],
   }
 
-  // Use proxy if configured — keeps the real API key off the browser
   const useProxy = !!proxyUrl?.trim()
   const url     = useProxy ? proxyUrl.trim() : 'https://api.anthropic.com/v1/messages'
   const headers = useProxy
@@ -462,7 +341,7 @@ async function callClaude(tweetText, settings, kind = 'outbound', customPrompt =
   const response = await fetch(url, {
     method: 'POST',
     headers,
-    body: JSON.stringify(payload),
+    body: JSON.stringify(apiPayload),
   })
 
   if (!response.ok) {
@@ -479,16 +358,15 @@ async function callClaude(tweetText, settings, kind = 'outbound', customPrompt =
 // ─── Status snapshot ─────────────────────────────────────────────────────────
 async function buildStatusSnapshot() {
   const { settings, state } = await loadAll()
-  const alarm = await chrome.alarms.get(ALARM_OUTBOUND)
   return {
     isRunning:      state.isRunning,
     outboundCount:  state.outboundCount,
     replybackCount: state.replybackCount,
     outboundLimit:  settings.outboundLimit,
     replybackLimit: settings.replybackLimit,
-    nextAlarmAt:    alarm ? alarm.scheduledTime : null,
+    nextAlarmAt:    null,  // outbound loop lives in content script (setTimeout)
     error:          state.error,
-    hasApiKey:      !!settings.apiKey && !settings.proxyUrl || !!settings.proxyUrl,
+    hasApiKey:      !!settings.apiKey || !!settings.proxyUrl,
     hasMyHandle:    !!settings.myHandle,
   }
 }
