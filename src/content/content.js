@@ -19,6 +19,7 @@ let reactRoot           = null
 let scrollTimerId       = null
 let composeObserver     = null
 let composeWasOpen      = false
+let isReplying          = false  // blocks scroll simulator during reply typing
 
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
 function initialize() {
@@ -97,27 +98,31 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (type === MSG.TYPE_REPLY) {
     ;(async () => {
-      const { tweetId, replyText, autoSubmit } = payload
-      let tweetNode = findTweetNode(tweetId)
-
-      // Twitter's virtual list removes off-screen tweets from the DOM.
-      // If the tweet scrolled away during the 30-120s reply delay, scroll
-      // back to the top so Twitter re-renders the feed, then retry once.
-      if (!tweetNode) {
-        window.scrollTo({ top: 0, behavior: 'smooth' })
-        await delay(1200)
-        tweetNode = findTweetNode(tweetId)
-      }
-
-      if (!tweetNode) {
-        sendResponse({ ok: false, error: 'Tweet scrolled out of view — will retry next cycle' })
-        return
-      }
+      isReplying = true
       try {
+        const { tweetId, replyText, autoSubmit } = payload
+        let tweetNode = findTweetNode(tweetId)
+
+        // Twitter's virtual list removes off-screen tweets from the DOM.
+        // The extension's own scroll simulator may have scrolled the tweet
+        // away in the 30-120s between detection and the reply alarm.
+        // Scroll back to the top so Twitter re-renders the feed, then retry.
+        if (!tweetNode) {
+          window.scrollTo({ top: 0, behavior: 'smooth' })
+          await delay(2500)  // give Twitter's virtual list time to re-render
+          tweetNode = findTweetNode(tweetId)
+        }
+
+        if (!tweetNode) {
+          sendResponse({ ok: false, error: 'Tweet scrolled out of view — will retry next cycle' })
+          return
+        }
         await typeReply(tweetNode, replyText, autoSubmit)
         sendResponse({ ok: true })
       } catch (err) {
         sendResponse({ ok: false, error: err.message })
+      } finally {
+        isReplying = false
       }
     })()
     return true
@@ -142,6 +147,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
 // ─── Human-like scroll (used by LOAD_MORE_TWEETS and the simulator) ───────────
 async function humanScroll() {
+  if (isReplying) return  // don't scroll while we're trying to type a reply
   const active = document.activeElement
   if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) return
 
