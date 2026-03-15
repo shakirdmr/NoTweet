@@ -71,17 +71,10 @@ export default function SettingsPanel({ onThemeChange }) {
 
       {/* ── Claude API Key — required for everything ───────────────────── */}
       <div className="form-field">
-        <label className="form-label" htmlFor="nt-api-key">
-          Claude API Key
-          <span className="required-badge">Required</span>
-        </label>
+        <label className="form-label" htmlFor="nt-api-key">Claude API Key <span className="form-hint" style={{ textTransform: 'none', letterSpacing: 0 }}>(optional if using proxy)</span></label>
         <input id="nt-api-key" type="password" className="form-input"
-          placeholder="sk-ant-..." value={form.apiKey} autoComplete="off"
+          placeholder="sk-ant-... (leave blank if using proxy)" value={form.apiKey} autoComplete="off"
           onChange={(e) => set('apiKey', e.target.value)} />
-        <span className="form-hint">
-          Direct key — or leave blank and use the proxy below instead.
-          Get yours at console.anthropic.com
-        </span>
       </div>
 
       {/* ── Proxy (optional but recommended for enterprise keys) ────────── */}
@@ -98,7 +91,6 @@ export default function SettingsPanel({ onThemeChange }) {
           onChange={(e) => set('proxySecret', e.target.value)} />
         <span className="form-hint">
           When set, your API key stays on the server and is never sent to the browser.
-          Deploy the proxy in <code style={{ fontFamily: 'monospace', fontSize: '10px' }}>proxy/</code> to Cloudflare Workers or Vercel.
         </span>
       </div>
 
