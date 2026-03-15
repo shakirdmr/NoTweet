@@ -47,6 +47,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       for (const [id, data] of Object.entries(payload.tweetMap)) {
         if (!pendingTweets.has(id)) pendingTweets.set(id, data)
       }
+      savePendingTweets()  // fire-and-forget — survives SW sleep
       sendResponse({ ok: true })
       return false
     }
@@ -143,6 +144,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // OUTBOUND CYCLE — community / timeline replies
 // ═══════════════════════════════════════════════════════════════════════════════
 async function runOutboundCycle() {
+  // Reload persisted queue if SW was restarted and wiped the in-memory Map
+  if (pendingTweets.size === 0) await loadPendingTweets()
+
   let { settings, state, log } = await loadAll()
 
   state = checkDailyReset(state)
@@ -172,6 +176,7 @@ async function runOutboundCycle() {
   }
 
   const tweet = pickTweet(pendingTweets, settings, state.seenTweets)
+  savePendingTweets()  // persist map after pickTweet may have deleted entries
   if (!tweet) {
     // Queue empty — first try to recover already-visible tweets (lost on SW restart),
     // then ask the content script to scroll and load more.
@@ -390,6 +395,20 @@ async function requestMoreTweets() {
     currentTabId = tabId
   }
   chrome.tabs.sendMessage(tabId, { type: MSG.LOAD_MORE_TWEETS }).catch(() => {})
+}
+
+function savePendingTweets() {
+  const obj = {}
+  for (const [id, data] of pendingTweets.entries()) obj[id] = data
+  chrome.storage.local.set({ [STORE.PENDING_TWEETS]: obj })
+}
+
+async function loadPendingTweets() {
+  const result = await chrome.storage.local.get(STORE.PENDING_TWEETS)
+  const stored = result[STORE.PENDING_TWEETS] || {}
+  for (const [id, data] of Object.entries(stored)) {
+    if (!pendingTweets.has(id)) pendingTweets.set(id, data)
+  }
 }
 
 async function scheduleOutbound() {

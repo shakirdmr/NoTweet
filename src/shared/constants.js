@@ -13,6 +13,9 @@ export const MSG = {
   // Tweet correction (content ↔ background, direct sendMessage)
   CORRECT_TWEET:     'CORRECT_TWEET',
 
+  // Background → Content: re-scan already-visible tweets (after SW restart wipes queue)
+  RESCAN_TWEETS:     'RESCAN_TWEETS',
+
   // Background → Content (tab)
   TYPE_REPLY:        'TYPE_REPLY',
   STATUS_UPDATE:     'STATUS_UPDATE',
@@ -25,7 +28,8 @@ export const STORE = {
   SETTINGS:       'settings',
   STATE:          'state',
   LOG:            'log',
-  REPLYBACK_QUEUE: 'replybackQueue', // persisted so it survives service-worker sleep
+  REPLYBACK_QUEUE:  'replybackQueue',  // persisted so it survives service-worker sleep
+  PENDING_TWEETS:   'pendingTweets',   // persisted outbound queue (survives SW sleep)
 }
 
 // ─── Default values ───────────────────────────────────────────────────────────
