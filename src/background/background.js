@@ -173,8 +173,10 @@ async function runOutboundCycle() {
 
   const tweet = pickTweet(pendingTweets, settings, state.seenTweets)
   if (!tweet) {
-    // Queue empty — ask the content script to scroll and load more tweets automatically
+    // Queue empty — first try to recover already-visible tweets (lost on SW restart),
+    // then ask the content script to scroll and load more.
     if (pendingTweets.size === 0) {
+      await rescanTweets()
       await requestMoreTweets()
     }
     const { log } = await loadAll()
@@ -353,6 +355,17 @@ async function sendReplyToTab({ tweetId, replyText, handle, autoSubmit }) {
     type:    MSG.TYPE_REPLY,
     payload: { tweetId, replyText, handle, autoSubmit },
   }).catch(() => {})
+}
+
+async function rescanTweets() {
+  let tabId = currentTabId
+  if (tabId === null) {
+    const tabs = await chrome.tabs.query({ url: ['https://twitter.com/*', 'https://x.com/*'] })
+    if (!tabs.length) return
+    tabId = tabs[0].id
+    currentTabId = tabId
+  }
+  chrome.tabs.sendMessage(tabId, { type: MSG.RESCAN_TWEETS }).catch(() => {})
 }
 
 async function requestMoreTweets() {
