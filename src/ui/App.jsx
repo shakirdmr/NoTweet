@@ -20,6 +20,7 @@ export default function App({ shadowRoot }) {
     outboundLimit:  DEFAULTS.settings.outboundLimit,
     replybackLimit: DEFAULTS.settings.replybackLimit,
     nextReplyIn:    null,
+    activity:       null,
     error:          null,
     hasApiKey:      false,
     hasMyHandle:    false,
@@ -87,7 +88,10 @@ export default function App({ shadowRoot }) {
       if (!message?.type) return
 
       if (message.type === MSG.STATUS_UPDATE) {
-        setStatus(message.payload)
+        setStatus((prev) => ({ ...message.payload, nextReplyIn: prev.nextReplyIn, activity: prev.activity }))
+        if (!message.payload.isRunning) {
+          setStatus((prev) => ({ ...prev, nextReplyIn: null, activity: null }))
+        }
       }
 
       if (message.type === MSG.LOG_UPDATE) {
@@ -97,9 +101,8 @@ export default function App({ shadowRoot }) {
 
     chrome.runtime.onMessage.addListener(onMessage)
 
-    // Pull initial state immediately on mount
     chrome.runtime.sendMessage({ type: MSG.GET_STATUS }, (snap) => {
-      if (snap) setStatus(snap)
+      if (snap) setStatus((prev) => ({ ...snap, nextReplyIn: prev.nextReplyIn, activity: prev.activity }))
     })
 
     chrome.runtime.sendMessage({ type: MSG.GET_LOG }, (entries) => {
@@ -107,6 +110,38 @@ export default function App({ shadowRoot }) {
     })
 
     return () => chrome.runtime.onMessage.removeListener(onMessage)
+  }, [])
+
+  // ── Live activity + countdown from content script ─────────────────────────
+  useEffect(() => {
+    let tickId = null
+
+    function onActivity(e) {
+      const { type, ms } = e.detail
+      clearInterval(tickId)
+
+      if (type === 'waiting') {
+        const seconds = Math.round(ms / 1000)
+        setStatus((prev) => ({ ...prev, activity: 'waiting', nextReplyIn: seconds }))
+        tickId = setInterval(() => {
+          setStatus((prev) => {
+            if (!prev.nextReplyIn || prev.nextReplyIn <= 1) {
+              clearInterval(tickId)
+              return { ...prev, nextReplyIn: null }
+            }
+            return { ...prev, nextReplyIn: prev.nextReplyIn - 1 }
+          })
+        }, 1000)
+      } else {
+        setStatus((prev) => ({ ...prev, activity: type, nextReplyIn: null }))
+      }
+    }
+
+    window.addEventListener('notweet:activity', onActivity)
+    return () => {
+      window.removeEventListener('notweet:activity', onActivity)
+      clearInterval(tickId)
+    }
   }, [])
 
   // ── Polling fallback (30 s) — status_update may be missed if the   ─────────
@@ -121,7 +156,20 @@ export default function App({ shadowRoot }) {
   }, [])
 
   function sendMsg(type) { chrome.runtime.sendMessage({ type }).catch(() => {}) }
-  function clearLog()    { chrome.runtime.sendMessage({ type: MSG.CLEAR_LOG }).catch(() => {}) }
+  function clearLog()    {
+    chrome.runtime.sendMessage({ type: MSG.CLEAR_LOG }).catch(() => {})
+    setLog([])
+  }
+  function refreshData() {
+    chrome.runtime.sendMessage({ type: MSG.CLEAR_ERROR }, () => {
+      chrome.runtime.sendMessage({ type: MSG.GET_STATUS }, (snap) => {
+        if (snap) setStatus((prev) => ({ ...snap, nextReplyIn: prev.nextReplyIn, activity: prev.activity }))
+      })
+    })
+    chrome.runtime.sendMessage({ type: MSG.GET_LOG }, (entries) => {
+      if (Array.isArray(entries)) setLog(entries)
+    })
+  }
 
   return (
     <>
@@ -143,6 +191,7 @@ export default function App({ shadowRoot }) {
           onStart={() => sendMsg(MSG.START_BOT)}
           onStop={() => sendMsg(MSG.STOP_BOT)}
           onClearLog={clearLog}
+          onRefresh={refreshData}
           onThemeChange={(t) => { if (shadowRoot) shadowRoot.host.dataset.theme = t }}
         />
       )}

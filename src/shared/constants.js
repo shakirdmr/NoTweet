@@ -17,10 +17,13 @@ export const MSG = {
   GENERATE_REPLY:    'GENERATE_REPLY',  // ask Claude for a reply to a tweet
   LOG_OUTBOUND:      'LOG_OUTBOUND',    // report a sent reply; background updates counts
   LOG_ATTEMPT:       'LOG_ATTEMPT',     // report a skipped cycle (scroll / no match)
+  LOG_FAILED:        'LOG_FAILED',      // report a failed reply attempt (API error, submit failed)
+  CLEAR_ERROR:       'CLEAR_ERROR',     // clear stored error state
 
   // Background → Content (tab)
   STATUS_UPDATE:     'STATUS_UPDATE',
   LOG_UPDATE:        'LOG_UPDATE',
+  TYPE_REPLY:        'TYPE_REPLY',   // background → content: type a replyback into the DOM
 }
 
 // ─── chrome.storage.local keys ───────────────────────────────────────────────
@@ -46,6 +49,8 @@ export const DEFAULTS = {
     theme:             'dark', // 'dark' | 'light' | 'system'
     correctionEnabled: false,  // show "✨ Improve" bar when compose box opens
     correctionPrompt:  '',     // empty = use built-in default prompt
+    delayMin:          2,      // minutes to wait between outbound replies (min)
+    delayMax:          3,      // minutes to wait between outbound replies (max)
     proxyUrl:          '',     // e.g. https://notweet-proxy.workers.dev (leave blank = direct)
     proxySecret:       '',     // shared secret for the proxy
   },
@@ -53,6 +58,7 @@ export const DEFAULTS = {
     isRunning:      false,
     outboundCount:  0,      // replies sent to community posts today
     replybackCount: 0,      // reply-backs sent today
+    failedCount:    0,      // failed reply attempts today
     lastReset:      null,
     seenTweets:     {},
     error:          null,
@@ -63,9 +69,9 @@ export const DEFAULTS = {
 
 // ─── Timing ───────────────────────────────────────────────────────────────────
 export const DELAY = {
-  // Outbound (community) replies — feels human, not instant
-  MIN_BETWEEN_REPLIES: 30,    // seconds
-  MAX_BETWEEN_REPLIES: 120,   // seconds
+  // Outbound (community) replies — 2–3 min gap so new tweets load and it feels human
+  MIN_BETWEEN_REPLIES: 120,   // seconds
+  MAX_BETWEEN_REPLIES: 180,   // seconds
 
   // Reply-backs to own post — quick, like you just saw it
   REPLYBACK_MIN_MS: 5_000,    // 5 seconds

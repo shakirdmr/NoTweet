@@ -18,7 +18,7 @@ import { MSG, STORE } from '../../shared/constants.js'
  *   onStop     {fn}
  *   onClearLog {fn}
  */
-export default function SidePanel({ status, log, onClose, onStart, onStop, onClearLog, onThemeChange }) {
+export default function SidePanel({ status, log, onClose, onStart, onStop, onClearLog, onRefresh, onThemeChange }) {
   const [tab, setTab] = useState('status')
 
   return (
@@ -29,6 +29,7 @@ export default function SidePanel({ status, log, onClose, onStart, onStop, onCle
         <Logo size={26} />
         <span className="side-panel-title">NoTweet</span>
         <StatusBadge running={status.isRunning} error={status.error} />
+        <button className="panel-icon-btn" onClick={onRefresh} title="Refresh extension data">↺</button>
         <button className="panel-icon-btn" onClick={onClose} title="Close">✕</button>
       </header>
 
@@ -63,28 +64,36 @@ export default function SidePanel({ status, log, onClose, onStart, onStop, onCle
   )
 }
 
+// ─── Activity labels ──────────────────────────────────────────────────────────
+const ACTIVITY_LABEL = {
+  scanning:      'Scanning tweets…',
+  scrolling:     'Scrolling for more tweets…',
+  generating:    'Asking Claude for a reply…',
+  typing:        'Typing reply…',
+  compose_open:  'Compose box is open — waiting for you to close it…',
+  limit_reached: 'Daily limit reached — stopped.',
+  idle:          null,
+}
+
 // ─── Status tab ───────────────────────────────────────────────────────────────
 function StatusView({ status, onStart, onStop }) {
   const {
     isRunning,
     outboundCount  = 0,
     replybackCount = 0,
+    failedCount    = 0,
     outboundLimit  = 5,
     replybackLimit = 5,
-    nextAlarmAt,
+    nextReplyIn,
+    activity,
     error,
     hasApiKey,
     hasMyHandle,
   } = status
 
-  const [countdown, setCountdown] = useState(null)
-  useEffect(() => {
-    if (!nextAlarmAt) { setCountdown(null); return }
-    const tick = () => setCountdown(Math.max(0, Math.round((nextAlarmAt - Date.now()) / 1000)))
-    tick()
-    const id = setInterval(tick, 1000)
-    return () => clearInterval(id)
-  }, [nextAlarmAt])
+  const activityLabel = activity === 'waiting' && nextReplyIn !== null
+    ? `Waiting ${formatSeconds(nextReplyIn)}…`
+    : ACTIVITY_LABEL[activity] ?? null
 
   const [behavior, setBehavior] = useState({ autoReply: true, autoLike: false, autoSubmit: false })
 
@@ -103,7 +112,6 @@ function StatusView({ status, onStart, onStop }) {
   function toggleBehavior(field) {
     setBehavior((prev) => {
       const next = { ...prev, [field]: !prev[field] }
-      // Patch just these three keys into stored settings
       chrome.storage.local.get(STORE.SETTINGS, (result) => {
         const current = result[STORE.SETTINGS] ?? {}
         const updated = { ...current, autoReply: next.autoReply, autoLike: next.autoLike, autoSubmit: next.autoSubmit }
@@ -120,8 +128,12 @@ function StatusView({ status, onStart, onStop }) {
       <div className="stat-section-label">Community replies</div>
       <div className="status-cards" style={{ marginBottom: '16px' }}>
         <div className="stat-card">
-          <div className="stat-label">Sent tonight</div>
+          <div className="stat-label">Sent</div>
           <div className="stat-value accent">{outboundCount}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Failed</div>
+          <div className="stat-value" style={{ color: failedCount > 0 ? '#ff6b6b' : 'inherit' }}>{failedCount}</div>
         </div>
         <div className="stat-card">
           <div className="stat-label">Remaining</div>
@@ -166,13 +178,14 @@ function StatusView({ status, onStart, onStop }) {
         ))}
       </div>
 
-      {/* ── Current status ──────────────────────────────────────────────── */}
+      {/* ── Current status + activity ────────────────────────────────────── */}
       <div className="status-row" style={{ marginTop: '20px' }}>
         <StatusBadge running={isRunning} error={error} />
-        {isRunning && countdown !== null && (
-          <span className="next-reply-hint">Next community reply in ~{formatSeconds(countdown)}</span>
-        )}
       </div>
+
+      {isRunning && activityLabel && (
+        <div className="activity-label">{activityLabel}</div>
+      )}
 
       {error && <div className="error-box">⚠ {error}</div>}
 

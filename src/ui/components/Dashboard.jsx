@@ -73,18 +73,34 @@ export default function Dashboard({ status, log, onCollapse }) {
 }
 
 // ─── Status tab ───────────────────────────────────────────────────────────────
+const ACTIVITY_LABEL = {
+  scanning:      'Scanning tweets…',
+  scrolling:     'Scrolling for more tweets…',
+  generating:    'Asking Claude for a reply…',
+  typing:        'Typing reply…',
+  compose_open:  'Compose box is open — waiting for you to close it…',
+  idle:          null,
+  limit_reached: 'Daily limit reached — stopped.',
+}
+
 function StatusView({ status, onStart, onStop }) {
   const {
     isRunning,
     outboundCount  = 0,
     replybackCount = 0,
+    failedCount    = 0,
     outboundLimit  = 5,
     replybackLimit = 5,
     nextReplyIn,
+    activity,
     error,
     hasApiKey,
     hasMyHandle,
   } = status
+
+  const activityLabel = activity === 'waiting' && nextReplyIn !== null
+    ? `Waiting ${formatSeconds(nextReplyIn)}…`
+    : ACTIVITY_LABEL[activity] ?? null
 
   return (
     <div className="status-view">
@@ -93,8 +109,12 @@ function StatusView({ status, onStart, onStop }) {
       <div className="stat-section-label">Community replies</div>
       <div className="status-cards" style={{ marginBottom: '16px' }}>
         <div className="stat-card">
-          <div className="stat-label">Sent tonight</div>
+          <div className="stat-label">Sent</div>
           <div className="stat-value accent">{outboundCount}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Failed</div>
+          <div className="stat-value" style={{ color: failedCount > 0 ? '#ff6b6b' : 'inherit' }}>{failedCount}</div>
         </div>
         <div className="stat-card">
           <div className="stat-label">Remaining</div>
@@ -123,10 +143,11 @@ function StatusView({ status, onStart, onStop }) {
       {/* ── Current status ──────────────────────────────────────────────── */}
       <div className="status-row">
         <StatusBadge running={isRunning} error={error} />
-        {isRunning && nextReplyIn !== null && (
-          <span className="next-reply-hint">Next community reply in ~{formatSeconds(nextReplyIn)}</span>
-        )}
       </div>
+
+      {isRunning && activityLabel && (
+        <div className="activity-label">{activityLabel}</div>
+      )}
 
       {error && <div className="error-box">⚠ {error}</div>}
 

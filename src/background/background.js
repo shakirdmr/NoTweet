@@ -19,6 +19,7 @@ import {
   loadAll, setStorage, ensureDefaults,
   randomBetween, todayString,
 } from '../shared/utils.js'
+import { OUTBOUND_PROMPT, REPLYBACK_PROMPT, CORRECTION_PROMPT } from './prompts.js'
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 chrome.runtime.onInstalled.addListener(ensureDefaults)
@@ -38,8 +39,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // ── Someone replied to the user's own post ─────────────────────────────
     case MSG.REPLY_TO_MY_POST: {
       ;(async () => {
-        await enqueueReplyback(payload.tweet)
-        sendResponse({ ok: true })
+        try {
+          await enqueueReplyback(payload.tweet)
+          sendResponse({ ok: true })
+        } catch (err) {
+          sendResponse({ ok: false, error: err.message })
+        }
       })()
       return true
     }
@@ -47,16 +52,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // ── Content script asks Claude for a reply text ────────────────────────
     case MSG.GENERATE_REPLY: {
       ;(async () => {
-        const { settings } = await loadAll()
-        if (!settings.apiKey && !settings.proxyUrl) {
-          sendResponse({ ok: false, error: 'No API key configured.' })
-          return
-        }
         try {
+          const { settings } = await loadAll()
+          if (!settings.apiKey && !settings.proxyUrl) {
+            sendResponse({ ok: false, error: 'No API key configured.' })
+            return
+          }
           const replyText = await callClaude(payload.tweetText, settings, 'outbound')
           sendResponse({ ok: true, replyText })
         } catch (err) {
-          sendResponse({ ok: false, error: err.message })
+          // 401/403 = invalid API key — no point retrying, stop the bot
+          const fatal = /40[13]/.test(err.message)
+          sendResponse({ ok: false, error: err.message, fatal })
         }
       })()
       return true
@@ -65,15 +72,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // ── Content script reports a successful outbound reply ─────────────────
     case MSG.LOG_OUTBOUND: {
       ;(async () => {
-        let { state, log } = await loadAll()
-        state = checkDailyReset(state)
-        state.seenTweets[payload.tweet.id] = true
-        state.outboundCount++
-        state.error = null
-        await setStorage({ [STORE.STATE]: state })
-        await saveLogEntry({ tweet: payload.tweet, replyText: payload.replyText, kind: 'outbound', log })
-        await broadcastStatus()
-        sendResponse({ ok: true })
+        try {
+          let { state, log } = await loadAll()
+          state = checkDailyReset(state)
+          state.seenTweets[payload.tweet.id] = Date.now()
+          if (!payload.skipCount) {
+            state.outboundCount++
+            state.error = null
+          }
+          await setStorage({ [STORE.STATE]: state })
+          // Always log the entry so seenTweets bookkeeping is visible; skip count-increment only
+          await saveLogEntry({ tweet: payload.tweet, replyText: payload.replyText, kind: payload.skipCount ? 'seen' : 'outbound', log })
+          if (!payload.skipCount) await broadcastStatus()
+          sendResponse({ ok: true })
+        } catch (err) {
+          sendResponse({ ok: false, error: err.message })
+        }
       })()
       return true
     }
@@ -81,75 +95,139 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // ── Content script reports a skipped cycle ────────────────────────────
     case MSG.LOG_ATTEMPT: {
       ;(async () => {
-        const { log } = await loadAll()
-        await saveLogEntry({ tweet: null, replyText: null, kind: 'attempt', log, reason: payload.reason })
-        sendResponse({ ok: true })
+        try {
+          const { log } = await loadAll()
+          await saveLogEntry({ tweet: null, replyText: null, kind: 'attempt', log, reason: payload.reason })
+          sendResponse({ ok: true })
+        } catch (err) {
+          sendResponse({ ok: false, error: err.message })
+        }
+      })()
+      return true
+    }
+
+    case MSG.LOG_FAILED: {
+      ;(async () => {
+        try {
+          let { state, log } = await loadAll()
+          state = checkDailyReset(state)
+          state.failedCount = (state.failedCount || 0) + 1
+          state.error = payload.reason || 'Reply failed'
+          await setStorage({ [STORE.STATE]: state })
+          await saveLogEntry({ tweet: payload.tweet || null, replyText: payload.replyText || null, kind: 'error', log, reason: payload.reason })
+          await broadcastStatus()
+          sendResponse({ ok: true })
+        } catch (err) {
+          sendResponse({ ok: false, error: err.message })
+        }
       })()
       return true
     }
 
     case MSG.START_BOT: {
       ;(async () => {
-        const { state } = await loadAll()
-        state.isRunning = true
-        state.error = null
-        await setStorage({ [STORE.STATE]: state })
-        await broadcastStatus()  // content script starts its reply loop on STATUS_UPDATE
-        sendResponse({ ok: true })
+        try {
+          const { state } = await loadAll()
+          state.isRunning  = true
+          state.error      = null
+          state.failedCount = 0   // fresh start = clear failure count
+          await setStorage({ [STORE.STATE]: state })
+          await broadcastStatus()  // content script starts its reply loop on STATUS_UPDATE
+          sendResponse({ ok: true })
+        } catch (err) {
+          sendResponse({ ok: false, error: err.message })
+        }
       })()
       return true
     }
 
     case MSG.STOP_BOT: {
       ;(async () => {
-        await chrome.alarms.clear(ALARM_REPLYBACK)
-        const { state } = await loadAll()
-        state.isRunning = false
-        await setStorage({ [STORE.STATE]: state })
-        await broadcastStatus()
-        sendResponse({ ok: true })
+        try {
+          await chrome.alarms.clear(ALARM_REPLYBACK)
+          const { state } = await loadAll()
+          state.isRunning = false
+          state.error     = null   // clear stale errors when stopped
+          await setStorage({ [STORE.STATE]: state })
+          await broadcastStatus()
+          sendResponse({ ok: true })
+        } catch (err) {
+          sendResponse({ ok: false, error: err.message })
+        }
       })()
       return true
     }
 
     case MSG.SAVE_SETTINGS: {
       ;(async () => {
-        await setStorage({ [STORE.SETTINGS]: payload })
-        sendResponse({ ok: true })
+        try {
+          await setStorage({ [STORE.SETTINGS]: payload })
+          sendResponse({ ok: true })
+        } catch (err) {
+          sendResponse({ ok: false, error: err.message })
+        }
+      })()
+      return true
+    }
+
+    case MSG.CLEAR_ERROR: {
+      ;(async () => {
+        try {
+          const { state } = await loadAll()
+          state.error = null
+          await setStorage({ [STORE.STATE]: state })
+          sendResponse({ ok: true })
+        } catch (err) {
+          sendResponse({ ok: false, error: err.message })
+        }
       })()
       return true
     }
 
     case MSG.GET_STATUS: {
-      ;(async () => sendResponse(await buildStatusSnapshot()))()
+      ;(async () => {
+        try {
+          sendResponse(await buildStatusSnapshot())
+        } catch (err) {
+          sendResponse({ ok: false, error: err.message })
+        }
+      })()
       return true
     }
 
     case MSG.GET_LOG: {
       ;(async () => {
-        const { log } = await loadAll()
-        sendResponse(log)
+        try {
+          const { log } = await loadAll()
+          sendResponse(log)
+        } catch (err) {
+          sendResponse([])
+        }
       })()
       return true
     }
 
     case MSG.CLEAR_LOG: {
       ;(async () => {
-        await setStorage({ [STORE.LOG]: [] })
-        await broadcastStatus()
-        sendResponse({ ok: true })
+        try {
+          await setStorage({ [STORE.LOG]: [] })
+          await broadcastStatus()
+          sendResponse({ ok: true })
+        } catch (err) {
+          sendResponse({ ok: false, error: err.message })
+        }
       })()
       return true
     }
 
     case MSG.CORRECT_TWEET: {
       ;(async () => {
-        const { settings } = await loadAll()
-        if (!settings.apiKey && !settings.proxyUrl) {
-          sendResponse({ ok: false, error: 'No API key configured.' })
-          return
-        }
         try {
+          const { settings } = await loadAll()
+          if (!settings.apiKey && !settings.proxyUrl) {
+            sendResponse({ ok: false, error: 'No API key configured.' })
+            return
+          }
           const correctedText = await callClaude(payload.text, settings, 'correction', settings.correctionPrompt)
           sendResponse({ ok: true, correctedText })
         } catch (err) {
@@ -213,12 +291,13 @@ async function runReplybackCycle() {
 
   try {
     const replyText = await callClaude(tweet.text, settings, 'replyback')
-    state.seenTweets[tweet.id] = true
+    state.seenTweets[tweet.id] = Date.now()
     state.replybackCount++
     await setStorage({ [STORE.STATE]: state })
     await saveLogEntry({ tweet, replyText, kind: 'replyback', log })
     await sendReplyToTab({ tweetId: tweet.id, replyText, autoSubmit: settings.autoSubmit, tweet })
   } catch (err) {
+    state.failedCount = (state.failedCount || 0) + 1
     state.error = err.message
     await setStorage({ [STORE.STATE]: state })
     const { log: freshLog } = await loadAll()
@@ -242,7 +321,11 @@ function checkDailyReset(state) {
   if (state.lastReset !== today) {
     state.outboundCount  = 0
     state.replybackCount = 0
-    state.seenTweets     = {}
+    state.failedCount    = 0
+    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000
+    state.seenTweets = Object.fromEntries(
+      Object.entries(state.seenTweets).filter(([, ts]) => ts > cutoff)
+    )
     state.lastReset      = today
   }
   return state
@@ -297,44 +380,19 @@ async function callClaude(tweetText, settings, kind = 'outbound', customPrompt =
   let system, userContent
 
   if (kind === 'replyback') {
-    system = `You are a founder replying to someone who commented on your tweet. You've been building in public for years and have real scar tissue from it.
-
-Write a reply that sounds like you typed it on your phone between tasks. Raw, direct, no polish.
-
-Rules:
-- 2–3 lines max, can be as short as one punchy line
-- Write like you're texting a peer — lowercase is fine, skip punctuation sometimes
-- Draw from real founder experience: shipping late, losing customers, bad launches, small wins that felt huge
-- Be specific to what they actually said — don't give generic advice
-- Occasionally drop a word or use "lol" / "tbh" / "ngl" naturally — not forced
-- NEVER start with "Great", "Love this", "So true", "Absolutely", or any hype opener
-- No hashtags, no emojis unless they feel completely natural
-- No quotes around your reply, no labels, just the raw text`
+    system      = REPLYBACK_PROMPT
     userContent = `Their reply: "${tweetText}"`
   } else if (kind === 'correction') {
-    system = customPrompt.trim() ||
-      'Fix grammar, improve clarity, and make this tweet more engaging. Keep the same tone and meaning. Return only the improved tweet text — no labels, no quotes, no explanation.'
+    system      = customPrompt.trim() || CORRECTION_PROMPT
     userContent = tweetText
   } else {
-    system = `You are a founder who has been building products for years. You reply to tweets on Twitter like a real person — not a content creator, not a motivational account, just someone with actual experience who has something worth saying.
-
-Write a reply that sounds like it was typed quickly, from memory, from real experience.
-
-Rules:
-- 2–3 lines max. Can be one line if that's all it needs
-- Lowercase is fine. Missing punctuation is fine. Imperfect grammar is fine
-- Sound like you've actually lived this: shipping at 3am, losing users, making $0 for months, finally getting traction
-- Be specific to what the tweet is actually saying — not generic
-- Occasionally throw in a small natural typo or shorthand (ur, tbh, ngl, lol) — don't overdo it
-- NEVER open with "Great post", "Love this", "So true", "This is so good", "Absolutely", or any variation
-- No hashtags. No emojis unless it's a single one that fits naturally
-- No quotes, no labels, no formatting — just the reply text and nothing else`
+    system      = OUTBOUND_PROMPT
     userContent = `Tweet: "${tweetText}"`
   }
 
   const apiPayload = {
     model:      'claude-haiku-4-5-20251001',
-    max_tokens: 80,
+    max_tokens: 35,
     system,
     messages:   [{ role: 'user', content: userContent }],
   }
@@ -374,6 +432,7 @@ async function buildStatusSnapshot() {
     isRunning:      state.isRunning,
     outboundCount:  state.outboundCount,
     replybackCount: state.replybackCount,
+    failedCount:    state.failedCount || 0,
     outboundLimit:  settings.outboundLimit,
     replybackLimit: settings.replybackLimit,
     nextAlarmAt:    null,  // outbound loop lives in content script (setTimeout)
