@@ -1,18 +1,18 @@
-# البنية التقنية — NoTweet
+# Architecture — NoTweet
 
-## نظرة عامة
+## Overview
 
-الإضافة مكوّنة من ثلاثة أجزاء رئيسية تعمل معاً:
+The extension has three main parts that communicate via Chrome message passing:
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                    صفحة تويتر/X                      │
+│                   Twitter/X Page                    │
 │                                                     │
 │  ┌──────────────────┐     ┌────────────────────┐    │
 │  │  Content Script  │────▶│   Side Panel (UI)  │    │
 │  │  (content.js)    │     │   (React + Shadow) │    │
 │  └────────┬─────────┘     └────────────────────┘    │
-│           │ رسائل chrome.runtime                     │
+│           │ chrome.runtime messages                  │
 │  ┌────────▼─────────┐                               │
 │  │  Service Worker  │ ◀── Claude API                 │
 │  │  (background.js) │                               │
@@ -22,98 +22,98 @@
 
 ---
 
-## الجزء الأول: Content Script
+## Part 1: Content Script
 
-**الملف:** `src/content/content.js` + `src/content/typer.js` + `src/content/observer.js`
+**Files:** `src/content/content.js`, `src/content/typer.js`, `src/content/observer.js`
 
-هذا الجزء يعمل داخل صفحة تويتر مباشرة.
+Runs directly inside the Twitter/X page.
 
-### ماذا يفعل؟
+### What it does
 
-1. **يراقب التغريدات** — يستخدم `MutationObserver` ليلاحظ عندما تظهر تغريدات جديدة في الصفحة
-2. **يختار التغريدة** — يفلتر التغريدات بناءً على الكلمات والحسابات المطلوبة
-3. **يطلب الرد** — يرسل نص التغريدة إلى Service Worker ليطلب من Claude رداً
-4. **يكتب الرد** — يفتح صندوق الرد ويكتب الكلمات حرفاً بحرف لتبدو طبيعية
-5. **يرسل الرد** — ينقر زر الإرسال
+1. **Watches for tweets** — uses `MutationObserver` to detect new tweets appearing in the DOM
+2. **Picks a tweet** — filters by keywords and accounts from settings
+3. **Requests a reply** — sends the tweet text to the Service Worker which calls Claude
+4. **Types the reply** — opens the reply compose box and types character by character
+5. **Submits** — clicks the Reply button
 
-### حلقة الردود
+### Reply loop
 
 ```
 startReplyLoop()
     ↓
-scheduleNextReply()  ← ينتظر X دقيقة
+scheduleNextReply()  ← waits min–max minutes
     ↓
 runReplyLoop()
     ↓
-هل هناك تغريدة جديدة؟
-    ↓ نعم
-typeReply() ← يكتب ويرسل
+Is there an unseen tweet?
+    ↓ yes
+typeReply()  ← types and submits
     ↓
-scheduleNextReply() ← ينتظر مرة أخرى
+scheduleNextReply()  ← wait again
 ```
 
 ---
 
-## الجزء الثاني: Service Worker (الخلفية)
+## Part 2: Service Worker (Background)
 
-**الملف:** `src/background/background.js` + `src/background/prompts.js`
+**Files:** `src/background/background.js`, `src/background/prompts.js`
 
-يعمل في الخلفية حتى لو أُغلقت الصفحة لفترة قصيرة.
+Runs in the background even when the page is briefly closed.
 
-### ماذا يفعل؟
+### What it does
 
-- **يستدعي Claude API** — يرسل نص التغريدة ويستقبل الرد المقترح
-- **يحفظ البيانات** — يخزن الإحصائيات، التغريدات المرئية، والإعدادات في `chrome.storage.local`
-- **يوزّع الرسائل** — يستقبل طلبات من Content Script والواجهة ويردّ عليها
+- **Calls Claude API** — sends tweet text, receives a suggested reply
+- **Persists data** — stores stats, seen tweets, and settings in `chrome.storage.local`
+- **Routes messages** — receives requests from the Content Script and UI, responds to each
 
-### التخزين
+### Storage layout
 
 ```
 chrome.storage.local
 │
-├── settings    ← إعدادات المستخدم (API key, حدود, تأخير...)
-├── state       ← حالة البوت (عداد الردود, التغريدات المرئية...)
-├── log         ← سجل آخر 100 عملية
-└── replybackQueue ← طابور الردود على ردود المستخدم
+├── settings        ← user settings (API key, limits, delay...)
+├── state           ← bot state (reply counts, seen tweets...)
+├── log             ← last 100 activity entries
+└── replybackQueue  ← queue of replies to reply-backs on user's own posts
 ```
 
 ---
 
-## الجزء الثالث: الواجهة (UI)
+## Part 3: UI (Side Panel)
 
-**الملفات:** `src/ui/`
+**Files:** `src/ui/`
 
-واجهة React تعمل داخل **Shadow DOM** حتى لا تتعارض أنماطها مع أنماط تويتر.
+A React app rendered inside **Shadow DOM** so its styles never conflict with Twitter's.
 
-### الشاشات
+### Tabs
 
-- **Status** — يعرض الإحصائيات، الحالة، وأزرار التشغيل
-- **Settings** — يعدّل إعدادات البوت
-- **Log** — يعرض آخر الأنشطة
-- **Correct** — يساعد في تصحيح التغريدات يدوياً
+- **Status** — shows stats, current activity, and Start/Stop controls
+- **Settings** — edit all bot settings
+- **Log** — view recent activity
+- **Correct** — manually improve tweets before posting
 
 ---
 
-## تدفق الرسائل
+## Message flow
 
 ```
 Content Script  ──GENERATE_REPLY──▶  Background  ──▶  Claude API
 Content Script  ◀──────reply text──  Background  ◀──  Claude
 
-Content Script  ──LOG_OUTBOUND────▶  Background  (يحفّظ في storage)
-Background      ──STATUS_UPDATE───▶  UI Panel    (يحدّث الأرقام)
+Content Script  ──LOG_OUTBOUND────▶  Background  (saves to storage)
+Background      ──STATUS_UPDATE───▶  UI Panel    (updates counters)
 ```
 
 ---
 
-## ملفات مهمة
+## Key files
 
-| الملف | الوظيفة |
-|-------|---------|
-| `src/content/content.js` | حلقة الردود الرئيسية |
-| `src/content/typer.js` | محاكاة الكتابة البشرية |
-| `src/content/observer.js` | مراقبة التغريدات في DOM |
-| `src/background/background.js` | منطق الخلفية والتخزين |
-| `src/background/prompts.js` | برومبتات Claude |
-| `src/shared/constants.js` | ثوابت مشتركة بين الأجزاء |
-| `src/ui/components/SidePanel.jsx` | الواجهة الرئيسية |
+| File | Purpose |
+|------|---------|
+| `src/content/content.js` | Main reply loop |
+| `src/content/typer.js` | Human-like typing simulation |
+| `src/content/observer.js` | DOM tweet detection |
+| `src/background/background.js` | Background logic and storage |
+| `src/background/prompts.js` | Claude prompts |
+| `src/shared/constants.js` | Shared constants across all contexts |
+| `src/ui/components/SidePanel.jsx` | Main UI component |

@@ -1,12 +1,12 @@
-# دليل المساهمة — NoTweet
+# Contributing — NoTweet
 
-أهلاً بك! إذا أردت المساهمة في تطوير NoTweet، هذا الملف يشرح كيف تبدأ.
+Welcome! Here's everything you need to start contributing.
 
 ---
 
-## كيف تبدأ؟
+## Getting started
 
-### 1. احضر الكود
+### 1. Clone and install
 
 ```bash
 git clone <repo-url>
@@ -14,74 +14,73 @@ cd notweet
 npm install
 ```
 
-### 2. شغّل وضع التطوير
+### 2. Start watch mode
 
 ```bash
 npm run dev
 ```
 
-هذا يراقب الملفات ويعيد البناء تلقائياً عند أي تغيير.
+This watches all files and rebuilds automatically on every change.
 
-### 3. حمّل الإضافة على كروم
+### 3. Load the extension in Chrome
 
-1. افتح `chrome://extensions`
-2. فعّل **Developer mode**
-3. اضغط **Load unpacked** واختر مجلد `dist/`
-4. بعد كل تغيير → اضغط أيقونة التحديث على بطاقة NoTweet
+1. Open `chrome://extensions`
+2. Enable **Developer mode**
+3. Click **Load unpacked** → select the `dist/` folder
+4. After each rebuild → click the refresh icon on the NoTweet card
 
 ---
 
-## هيكل المشروع
+## Project structure
 
 ```
 src/
 ├── background/
-│   ├── background.js   ← Service Worker الرئيسي
-│   └── prompts.js      ← برومبتات Claude
+│   ├── background.js   ← Service Worker (Claude calls, storage, routing)
+│   └── prompts.js      ← Claude prompt templates
 ├── content/
-│   ├── content.js      ← حلقة الردود
-│   ├── typer.js        ← محاكاة الكتابة
-│   └── observer.js     ← مراقبة التغريدات
+│   ├── content.js      ← Reply loop
+│   ├── typer.js        ← Typing simulation
+│   └── observer.js     ← Tweet DOM detection
 ├── ui/
-│   ├── App.jsx         ← الجذر الرئيسي للواجهة
-│   └── components/     ← مكوّنات React
+│   ├── App.jsx         ← React root
+│   └── components/     ← UI components
 └── shared/
-    ├── constants.js    ← ثوابت مشتركة
-    └── utils.js        ← دوال مساعدة
+    ├── constants.js    ← Shared constants
+    └── utils.js        ← Helper functions
 ```
 
 ---
 
-## قواعد الكود
+## Code guidelines
 
-- **لا تضف تعليقات زائدة** — الكود يجب أن يشرح نفسه
-- **لا تغيّر منطقاً لا علاقة له بمهمتك** — تغييرات صغيرة ومركّزة
-- **اختبر يدوياً** قبل الإرسال — شغّل البوت وتأكد أن التغيير يعمل
-
----
-
-## كيف ترسل مساهمة؟
-
-1. أنشئ فرعاً جديداً: `git checkout -b feature/اسم-الميزة`
-2. اعمل تغييراتك
-3. `npm run build` وتأكد أنها تبنى بنجاح
-4. `git add` للملفات التي غيّرتها فقط
-5. `git commit -m "وصف واضح للتغيير"`
-6. افتح Pull Request
+- **No unnecessary comments** — code should be self-explanatory
+- **Targeted changes only** — don't refactor code unrelated to your task
+- **Test manually** before submitting — run the bot and verify the change works end-to-end
 
 ---
 
-## تقرير مشكلة
+## Submitting a change
 
-إذا وجدت خطأ:
-1. افتح DevTools على صفحة تويتر (F12 → Console)
-2. انسخ رسائل الخطأ التي تبدأ بـ `[NoTweet]`
-3. افتح Issue مع وصف الخطوات التي أدت للمشكلة
+1. Create a branch: `git checkout -b feature/your-feature-name`
+2. Make your changes
+3. Run `npm run build` and confirm it succeeds
+4. Stage only the files you changed: `git add <files>`
+5. `git commit -m "Clear description of what changed and why"`
+6. Open a Pull Request
 
 ---
 
-## ملاحظات مهمة
+## Reporting a bug
 
-- **لا ترفع مفتاح API** في أي commit — أضفه في الإعدادات فقط
-- الإضافة تعمل على تويتر/X فقط حالياً
-- Chrome MV3 يعني Service Worker — لا تفترض أن الحالة في الذاكرة محفوظة دائماً، استخدم `chrome.storage.local`
+1. Open DevTools on the Twitter/X page (F12 → Console tab)
+2. Copy any messages starting with `[NoTweet]`
+3. Open an Issue with the error output and steps to reproduce
+
+---
+
+## Important notes
+
+- **Never commit your API key** — add it in the extension Settings only
+- The extension currently only works on Twitter/X
+- Chrome MV3 uses a Service Worker — don't assume in-memory state survives; always use `chrome.storage.local` for anything that needs to persist
